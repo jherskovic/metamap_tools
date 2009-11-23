@@ -33,18 +33,6 @@ import time
 
 METAMAP_BINARY="/opt/public_mm/bin/metamap08 -iDN"
 
-def wait_with_timeout(subprocess_to_wait_for, timeout_in_seconds):
-    wait_time=timeout_in_seconds/10.0
-    if wait_time>1.0:
-        wait_time=0.1 # Wait at most 1/10 of a second between polls
-    start_time=time.time()
-    while time.time()-start_time<timeout_in_seconds:
-        subprocess_to_wait_for.poll()
-        if subprocess_to_wait_for.returncode is not None:
-            return True
-        time.sleep(wait_time)
-    return False
-    
 def log_error_line(troublesome_line):
     open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
 
@@ -59,12 +47,12 @@ class LineProcessor(Process):
                                 shell=True,
                                 #bufsize=-1,
                                 ) # 10 mb per process of buffer
-            self.mm_exe.stdin.write('%s\n' % self.the_freaking_line.value)
+            #self.mm_exe.stdin.write('%s\n' % self.the_freaking_line.value)
             #mm_exe.stdin.flush()
             #mm_exe.stdin.close()
             #results=mm_exe.stdout.read(100)
             #results=mm_exe.stdout.read()
-            results=self.mm_exe.communicate()[0]
+            results=self.mm_exe.communicate('%s\n' % self.the_freaking_line.value)[0]
         except:
             self.mm_exe.kill()
             log_error_line(self.the_freaking_line.value)
