@@ -1,0 +1,8 @@
+Monday, November 23, 2009
+
+This project contains tools I use to interface with/work with local MetaMap (http://metamap.nlm.nih.gov) installations on linux.
+
+process_via_metamap.py
+----------------------
+Requires python 2.6. Uses the multiprocessing module to distribute lines to multiple copies of metamap. Right now due to some MetaMap weirdness it creates a single process per line, but it's still faster than SKR on an Ubuntu 9.10 32-bit VM with 4 processors and 2 GB of RAM. 
+  
