@@ -31,7 +31,7 @@ from multiprocessing import (Queue, JoinableQueue, cpu_count, Process,
 import subprocess
 import time
 
-METAMAP_BINARY="/opt/public_mm/bin/metamap08 -iDN"
+METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
 
 def log_error_line(troublesome_line):
     open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
@@ -52,6 +52,7 @@ class LineProcessor(Process):
             #mm_exe.stdin.close()
             #results=mm_exe.stdout.read(100)
             #results=mm_exe.stdout.read()
+            time.sleep(0.05)
             results=self.mm_exe.communicate('%s\n' % self.the_freaking_line.value)[0]
         except:
             self.mm_exe.kill()
@@ -69,7 +70,7 @@ def process_one_line(the_freaking_line):
     monitored_process.returnvalue=Array('c', 256*1024)
     monitored_process.orig_id=Array('c', 256)
     monitored_process.start()
-    monitored_process.join(10) # Wait for, at the most, 10 seconds
+    monitored_process.join(20) # Wait for, at the most, 20 seconds
     if monitored_process.is_alive():
         print "Warning: terminating runaway metamap process"
         monitored_process.terminate()
