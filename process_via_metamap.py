@@ -30,56 +30,66 @@ from multiprocessing import (Queue, JoinableQueue, cpu_count, Process,
                              current_process, get_logger, Array)
 import subprocess
 import time
+import re
+import traceback
 
 METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
+
+# These are the lines that interest us in MetaMap's output
+metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
 
 def log_error_line(troublesome_line):
     open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
 
 class LineProcessor(Process):
     def run(self):
-        self.orig_id.value, the_freaking_line=self.the_freaking_line.value.split('|', 1)
         try:
-            self.mm_exe=subprocess.Popen(METAMAP_BINARY, 
+            mm_exe=subprocess.Popen(METAMAP_BINARY, 
                                 stdin=subprocess.PIPE, 
                                 stdout=subprocess.PIPE,
                                 universal_newlines=True,
                                 shell=True,
                                 #bufsize=-1,
                                 ) # 10 mb per process of buffer
-            #self.mm_exe.stdin.write('%s\n' % self.the_freaking_line.value)
-            #mm_exe.stdin.flush()
-            #mm_exe.stdin.close()
-            #results=mm_exe.stdout.read(100)
-            #results=mm_exe.stdout.read()
+            # While we are opening the process, let's prepare the input
+            template="UI  - %s\nTX  - %s\n\n"
+            input_tuples=[tuple(x.strip().split('|', 1)) for x in self.data]
+            the_input=''.join(template % x for x in input_tuples)
             time.sleep(0.05)
-            results=self.mm_exe.communicate('%s\n' % self.the_freaking_line.value)[0]
+            results=mm_exe.communicate('%s' % the_input)[0]
         except:
-            self.mm_exe.kill()
-            log_error_line(self.the_freaking_line.value)
-            self.returnvalue.value="%s|*** error ***" % self.orig_id.value
+            print "Exception:", traceback.format_exc(), "on", self.data
+            try:
+                mm_exe.kill()
+            except:
+                log_error_line('Unable to kill process %r' % mm_exe)
+            log_error_line(''.join(self.data))
+            troublesome_ids=[x.split('|', 1)[0] for x in self.data]
+            self.returnvalue.value='\n'.join("%s|*** error ***" % x 
+                                            for x in troublesome_ids)
             return
         # Discard everything that's not a result line
-        self.returnvalue.value='\n'.join([x.replace("00000000", self.orig_id.value)
-                          for x in results.split('\n') if x[:8]=="00000000"])
+        self.returnvalue.value='\n'.join(metamap_output_filter.findall(results))
         return
         
-def process_one_line(the_freaking_line):
+def process_several_lines(lines):
     monitored_process=LineProcessor()
-    monitored_process.the_freaking_line=Array('c', the_freaking_line)
-    monitored_process.returnvalue=Array('c', 256*1024)
-    monitored_process.orig_id=Array('c', 256)
+    monitored_process.data=lines
+    monitored_process.returnvalue=Array('c', 256*1024*len(lines)) # 256 kb per line 
+                                                                  # should be enough
+                                                                  # for anybody
     monitored_process.start()
-    monitored_process.join(20) # Wait for, at the most, 20 seconds
+    monitored_process.join(10*len(lines)) # Wait for, at the most, 10 seconds per line
     if monitored_process.is_alive():
         print "Warning: terminating runaway metamap process"
-        monitored_process.terminate()
-        monitored_process.mm_exe.kill()
-        log_error_line(the_freaking_line)
-        return "%s|*** error ***" % monitored_process.orig_id
+        monitored_process.kill()
+        log_error_lines(''.join(lines))
+        troublesome_ids=[x.split('|', 1)[0] for x in lines]
+        return '\n'.join("%s|*** error ***" % x for x in troublesome_ids)
     return monitored_process.returnvalue.value
     
-def process_queue(which_queue, output_queue):
+def process_queue(which_queue, output_queue, number_of_lines_at_once=10):
+    this_request=[]
     while True:
         request=which_queue.get()
         # print "Got request", request
@@ -87,31 +97,45 @@ def process_queue(which_queue, output_queue):
             which_queue.task_done()
             break
         try:
-            get_response=process_one_line(request)
+            block_number=request[0]
+            request_lines=request[1]
+            get_response=process_several_lines(request_lines)
             if get_response is not None:
-                output_queue.put(get_response)
+                output_queue.put((block_number, get_response))
         finally:
             which_queue.task_done()
     return
     
-def retrieve_output(output_queue, output_file):
+def retrieve_output(output_queue, output_file, number_of_lines_at_once=10):
     start_time=time.time()
     items=0
+    next_block=0
+    waiting_blocks=[]
     while True:
-        output_item=output_queue.get()
+        incoming_output=output_queue.get()
         # print "Got ", output_item
-        if output_item is None:
+        if incoming_output is None:
             #output_queue.task_done()
             break
         elapsed=time.time()-start_time
-        items+=1
+        items+=number_of_lines_at_once
         try:
             speed=items/elapsed
         except ZeroDivisionError:
             speed=items
-        output_file.write('%s\n' % output_item)
-        print "%d items processed in %1.2f sec (%1.2f items/sec)" % (
-                                                        items, elapsed, speed)
+        waiting_blocks.append(incoming_output)
+        waiting_blocks.sort()
+        # The next line relies on Python's short circuit evaluation 
+        while len(waiting_blocks)>0 and waiting_blocks[0][0]==next_block:
+            output_file.write('%s\n' % waiting_blocks.pop(0)[1])
+            next_block+=1
+        print "%d items processed and %d output in %1.2f sec (%1.2f items/sec)" % (
+                                                    items, 
+                                                    next_block*number_of_lines_at_once,
+                                                    elapsed, speed)
+    if len(waiting_blocks)>0:
+        for b in waiting_blocks:
+            output_file.write("%s\n" % b[1])
     return
     
 def main():
@@ -119,28 +143,40 @@ def main():
     line_queue=JoinableQueue(workers*2) # Keep at most 2*workers lines in flight
     input_file=open(sys.argv[1], 'rU')
     output_file=open(sys.argv[2], 'w')
-    output_queue=Queue(workers*3000)
+    output_queue=Queue(workers*3)
+    lines_at_once=500
     processes=[]
     for i in xrange(workers):
         this_process=Process(target=process_queue,
-                             args=(line_queue, output_queue))
+                             args=(line_queue, output_queue, lines_at_once))
         this_process.start()
         processes.append(this_process)
 
     # Start the output processor
     output_processor=Process(target=retrieve_output, 
-                             args=(output_queue, output_file))
+                             args=(output_queue, output_file, lines_at_once))
     output_processor.start()
 
+    small_queue=[]
+    block_number=0
     for l in input_file:
-        line_queue.put(l)
-
+        small_queue.append(l)
+        if len(small_queue)>=lines_at_once:
+            line_queue.put((block_number, small_queue))
+            block_number+=1
+            small_queue=[]
+    if len(small_queue)>0:
+        line_queue.put((block_number, small_queue))
+        
     for i in xrange(workers):
         line_queue.put('STOP')
     
     print "Waiting for all tasks to end."
     line_queue.close()
     line_queue.join()
+    for p in processes:
+        p.join()
+    
     print "All tasks ended. Dumping the final output."
     output_queue.put(None)
     output_queue.close()
