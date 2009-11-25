@@ -33,10 +33,16 @@ import time
 import re
 import traceback
 
+# The location of the metamap executable
 METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
+
+# The number of lines to process in each instance of MetaMap
+LINES_AT_ONCE=500
 
 # These are the lines that interest us in MetaMap's output
 metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
+
+
 
 def log_error_line(troublesome_line):
     open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
@@ -133,9 +139,10 @@ def retrieve_output(output_queue, output_file, number_of_lines_at_once=10):
                                                     items, 
                                                     next_block*number_of_lines_at_once,
                                                     elapsed, speed)
-    if len(waiting_blocks)>0:
-        for b in waiting_blocks:
-            output_file.write("%s\n" % b[1])
+
+    # This will only happen if waiting_blocks is not empty
+    for b in waiting_blocks:
+        output_file.write("%s\n" % b[1])
     return
     
 def main():
@@ -144,24 +151,24 @@ def main():
     input_file=open(sys.argv[1], 'rU')
     output_file=open(sys.argv[2], 'w')
     output_queue=Queue(workers*3)
-    lines_at_once=500
+
     processes=[]
     for i in xrange(workers):
         this_process=Process(target=process_queue,
-                             args=(line_queue, output_queue, lines_at_once))
+                             args=(line_queue, output_queue, LINES_AT_ONCE))
         this_process.start()
         processes.append(this_process)
 
     # Start the output processor
     output_processor=Process(target=retrieve_output, 
-                             args=(output_queue, output_file, lines_at_once))
+                             args=(output_queue, output_file, LINES_AT_ONCE))
     output_processor.start()
 
     small_queue=[]
     block_number=0
     for l in input_file:
         small_queue.append(l)
-        if len(small_queue)>=lines_at_once:
+        if len(small_queue)>=LINES_AT_ONCE:
             line_queue.put((block_number, small_queue))
             block_number+=1
             small_queue=[]
