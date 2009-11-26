@@ -28,6 +28,7 @@ import sys
 import os
 from multiprocessing import (Queue, JoinableQueue, cpu_count, Process, 
                              current_process, get_logger, Array)
+from threading import Thread
 import subprocess
 import time
 import re
@@ -37,7 +38,11 @@ import traceback
 METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
 
 # The number of lines to process in each instance of MetaMap
-LINES_AT_ONCE=500
+LINES_AT_ONCE=100
+
+# The maximum number of words per line MetaMap will process without crashing
+# 200 seems safe
+MAX_WORDS_PER_LINE=200
 
 # These are the lines that interest us in MetaMap's output
 metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
@@ -47,10 +52,10 @@ metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
 def log_error_line(troublesome_line):
     open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
 
-class LineProcessor(Process):
+class LineProcessor(Thread):
     def run(self):
         try:
-            mm_exe=subprocess.Popen(METAMAP_BINARY, 
+            self.mm_exe=subprocess.Popen(METAMAP_BINARY, 
                                 stdin=subprocess.PIPE, 
                                 stdout=subprocess.PIPE,
                                 universal_newlines=True,
@@ -60,39 +65,46 @@ class LineProcessor(Process):
             # While we are opening the process, let's prepare the input
             template="UI  - %s\nTX  - %s\n\n"
             input_tuples=[tuple(x.strip().split('|', 1)) for x in self.data]
-            the_input=''.join(template % x for x in input_tuples)
+            # Set aside the tuples with too many words per line
+            bad_tuples=[x for x in input_tuples 
+                        if len(x[1].split()) > MAX_WORDS_PER_LINE]
+            bad_tuple_ids=set([x[0] for x in bad_tuples])
+            the_input=''.join(template % x for x in input_tuples
+                              if x[0] not in bad_tuple_ids)
             time.sleep(0.05)
-            results=mm_exe.communicate('%s' % the_input)[0]
+            results=self.mm_exe.communicate('%s' % the_input)[0]
+            # Right now we just omit the bad tuples from the result set 
+            # silently. Perhaps not the best solution, but it will work.
+            # We will log them to the "bad line" list.
+            for each_bad_tuple in bad_tuples:
+                log_error_line("Line has too many words: %s", each_bad_tuple)
         except:
             print "Exception:", traceback.format_exc(), "on", self.data
             try:
-                mm_exe.kill()
+                self.mm_exe.kill()
             except:
-                log_error_line('Unable to kill process %r' % mm_exe)
+                log_error_line('Unable to kill process %r' % self.mm_exe)
             log_error_line(''.join(self.data))
             troublesome_ids=[x.split('|', 1)[0] for x in self.data]
-            self.returnvalue.value='\n'.join("%s|*** error ***" % x 
+            self.returnvalue='\n'.join("%s|*** error ***" % x 
                                             for x in troublesome_ids)
             return
         # Discard everything that's not a result line
-        self.returnvalue.value='\n'.join(metamap_output_filter.findall(results))
+        self.returnvalue='\n'.join(metamap_output_filter.findall(results))
         return
         
 def process_several_lines(lines):
     monitored_process=LineProcessor()
     monitored_process.data=lines
-    monitored_process.returnvalue=Array('c', 256*1024*len(lines)) # 256 kb per line 
-                                                                  # should be enough
-                                                                  # for anybody
     monitored_process.start()
     monitored_process.join(10*len(lines)) # Wait for, at the most, 10 seconds per line
     if monitored_process.is_alive():
         print "Warning: terminating runaway metamap process"
-        monitored_process.kill()
+        monitored_process.mm_exe.kill()
         log_error_lines(''.join(lines))
         troublesome_ids=[x.split('|', 1)[0] for x in lines]
         return '\n'.join("%s|*** error ***" % x for x in troublesome_ids)
-    return monitored_process.returnvalue.value
+    return monitored_process.returnvalue
     
 def process_queue(which_queue, output_queue, number_of_lines_at_once=10):
     this_request=[]
