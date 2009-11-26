@@ -41,8 +41,8 @@ METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
 LINES_AT_ONCE=100
 
 # The maximum number of words per line MetaMap will process without crashing
-# 200 seems safe
-MAX_WORDS_PER_LINE=200
+# 180 seems safe
+MAX_WORDS_PER_LINE=180
 
 # These are the lines that interest us in MetaMap's output
 metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
@@ -101,7 +101,7 @@ def process_several_lines(lines):
     if monitored_process.is_alive():
         print "Warning: terminating runaway metamap process"
         monitored_process.mm_exe.kill()
-        log_error_lines(''.join(lines))
+        log_error_line(''.join(lines))
         troublesome_ids=[x.split('|', 1)[0] for x in lines]
         return '\n'.join("%s|*** error ***" % x for x in troublesome_ids)
     return monitored_process.returnvalue
