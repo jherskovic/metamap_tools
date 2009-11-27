@@ -38,7 +38,7 @@ import traceback
 METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
 
 # The number of lines to process in each instance of MetaMap
-LINES_AT_ONCE=100
+LINES_AT_ONCE=500
 
 # The maximum number of words per line MetaMap will process without crashing
 # 180 seems safe
@@ -77,7 +77,8 @@ class LineProcessor(Thread):
             # silently. Perhaps not the best solution, but it will work.
             # We will log them to the "bad line" list.
             for each_bad_tuple in bad_tuples:
-                log_error_line("Line has too many words: %s", each_bad_tuple)
+                log_error_line("Line %s has too many words: %s" % 
+                                each_bad_tuple)
         except:
             print "Exception:", traceback.format_exc(), "on", self.data
             try:
