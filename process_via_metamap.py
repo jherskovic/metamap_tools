@@ -26,6 +26,7 @@ Modify the METAMAP_BINARY= line to point to your MetaMap installation.
 
 import sys
 import os
+import signal
 from multiprocessing import (Queue, JoinableQueue, cpu_count, Process, 
                              current_process, get_logger, Array)
 from threading import Thread
@@ -51,6 +52,9 @@ metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
 
 def log_error_line(troublesome_line):
     open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
+
+def kill_process_group(pid):
+    os.killpg(pid, signal.SIGKILL)
 
 class LineProcessor(Thread):
     def run(self):
@@ -82,7 +86,7 @@ class LineProcessor(Thread):
         except:
             print "Exception:", traceback.format_exc(), "on", self.data
             try:
-                self.mm_exe.kill()
+                kill_process_group(self.mm_exe.pid)
             except:
                 log_error_line('Unable to kill process %r' % self.mm_exe)
             log_error_line(''.join(self.data))
@@ -101,7 +105,7 @@ def process_several_lines(lines):
     monitored_process.join(10*len(lines)) # Wait for, at the most, 10 seconds per line
     if monitored_process.is_alive():
         print "Warning: terminating runaway metamap process"
-        monitored_process.mm_exe.kill()
+        kill_process_group(monitored_process.mm_exe.pid)
         log_error_line(''.join(lines))
         troublesome_ids=[x.split('|', 1)[0] for x in lines]
         return '\n'.join("%s|*** error ***" % x for x in troublesome_ids)
