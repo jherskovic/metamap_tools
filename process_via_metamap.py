@@ -59,7 +59,7 @@ class LineProcessor(Thread):
                                 stdin=subprocess.PIPE, 
                                 stdout=subprocess.PIPE,
                                 universal_newlines=True,
-                                shell=False,
+                                shell=True,
                                 #bufsize=-1,
                                 ) # 10 mb per process of buffer
             # While we are opening the process, let's prepare the input
