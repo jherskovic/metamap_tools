@@ -38,11 +38,11 @@ import traceback
 METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
 
 # The number of lines to process in each instance of MetaMap
-LINES_AT_ONCE=500
+LINES_AT_ONCE=250
 
 # The maximum number of words per line MetaMap will process without crashing
-# 180 seems safe
-MAX_WORDS_PER_LINE=180
+# Arbitrarily chose 125. Who writes 100+ word sentences anyway?
+MAX_WORDS_PER_LINE=125
 
 # These are the lines that interest us in MetaMap's output
 metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
@@ -59,7 +59,7 @@ class LineProcessor(Thread):
                                 stdin=subprocess.PIPE, 
                                 stdout=subprocess.PIPE,
                                 universal_newlines=True,
-                                shell=True,
+                                shell=False,
                                 #bufsize=-1,
                                 ) # 10 mb per process of buffer
             # While we are opening the process, let's prepare the input
