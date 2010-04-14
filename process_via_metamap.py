@@ -28,37 +28,59 @@ import sys
 import os
 import signal
 from multiprocessing import (Queue, JoinableQueue, cpu_count, Process, 
-                             current_process, get_logger, Array)
-from threading import Thread
+                             current_process, get_logger, Array, Lock)
+from Queue import Empty                            
+#from threading import Thread
 import subprocess
 import time
 import re
 import traceback
+import tempfile
+import mmap
 
 # The location of the metamap executable
 METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
 
 # The number of lines to process in each instance of MetaMap
-LINES_AT_ONCE=250
+LINES_AT_ONCE=25
 
 # The maximum number of words per line MetaMap will process without crashing
 # Arbitrarily chose 125. Who writes 100+ word sentences anyway?
-MAX_WORDS_PER_LINE=125
+MAX_WORDS_PER_LINE=200
+
+# The maximum number of seconds to spend per line
+MAX_SECONDS_PER_LINE=15
 
 # These are the lines that interest us in MetaMap's output
 metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
 
-
+log_lock=Lock()
 
 def log_error_line(troublesome_line):
-    open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
+    """Spits a bad line out to a file called error_lines.log in the current
+    directory."""
+    global log_lock
+    log_lock.acquire()
+    try:
+        open("error_lines.log", "a").write("%s\n" % troublesome_line.strip())
+    finally:
+        log_lock.release()
+        
+def kill_process_group(bad_group):
+    os.killpg(bad_group, signal.SIGKILL)
 
-def kill_process_group(pid):
-    os.killpg(pid, signal.SIGKILL)
-
-class LineProcessor(Thread):
+class LineProcessor(Process):
+    """The LineProcessor class is a Process whose only purpose in life is to
+    control and isolate a MetaMap instance. It receives input and provides
+    output through Queues."""
+    def __init__(self, input_queue, output_queue):
+        self.input=input_queue
+        self.output=output_queue
+        Process.__init__(self)
     def run(self):
         try:
+            os.setpgid(0, os.getpid()) # Start a new process group
+            # Initialize the MetaMap process
             self.mm_exe=subprocess.Popen(METAMAP_BINARY, 
                                 stdin=subprocess.PIPE, 
                                 stdout=subprocess.PIPE,
@@ -68,7 +90,13 @@ class LineProcessor(Thread):
                                 ) # 10 mb per process of buffer
             # While we are opening the process, let's prepare the input
             template="UI  - %s\nTX  - %s\n\n"
-            input_tuples=[tuple(x.strip().split('|', 1)) for x in self.data]
+            input_tuples=[]
+            while True:
+                try:
+                    x=self.input.get(False)
+                except Empty:
+                    break
+                input_tuples.append(tuple(x.strip().split('|', 1)))
             # Set aside the tuples with too many words per line
             bad_tuples=[x for x in input_tuples 
                         if len(x[1].split()) > MAX_WORDS_PER_LINE]
@@ -76,6 +104,9 @@ class LineProcessor(Thread):
             the_input=''.join(template % x for x in input_tuples
                               if x[0] not in bad_tuple_ids)
             time.sleep(0.05)
+            # Keep the process group handy just in case it dies on us
+            self.pgrp=os.getpgid(self.mm_exe.pid)
+            # Send and receive data
             results=self.mm_exe.communicate('%s' % the_input)[0]
             # Right now we just omit the bad tuples from the result set 
             # silently. Perhaps not the best solution, but it will work.
@@ -86,30 +117,47 @@ class LineProcessor(Thread):
         except:
             print "Exception:", traceback.format_exc(), "on", self.data
             try:
-                kill_process_group(self.mm_exe.pid)
+                self.kill_process_group(pgrp)
             except:
-                log_error_line('Unable to kill process %r' % self.mm_exe)
+                log_error_line('Unable to kill process group %r' % pgrp)
             log_error_line(''.join(self.data))
             troublesome_ids=[x.split('|', 1)[0] for x in self.data]
-            self.returnvalue='\n'.join("%s|*** error ***" % x 
-                                            for x in troublesome_ids)
+            for x in troublesome_ids:
+                self.output.put("%s|*** error ***" % x)
             return
         # Discard everything that's not a result line
-        self.returnvalue='\n'.join(metamap_output_filter.findall(results))
+        for x in metamap_output_filter.findall(results):
+            self.output.put(x)
         return
         
 def process_several_lines(lines):
-    monitored_process=LineProcessor()
-    monitored_process.data=lines
+    """Process a set of lines while enforcing a time limitation and terminating
+    the MetaMap process tree if it does not finish on time."""
+    to_child=Queue()
+    from_child=Queue()
+    monitored_process=LineProcessor(to_child, from_child)
+    for x in lines:
+        to_child.put(x)
     monitored_process.start()
-    monitored_process.join(10*len(lines)) # Wait for, at the most, 10 seconds per line
+    monitored_process.join(MAX_SECONDS_PER_LINE*len(lines)) # Wait for this at the most
     if monitored_process.is_alive():
         print "Warning: terminating runaway metamap process"
-        kill_process_group(monitored_process.mm_exe.pid)
+        try:
+            bad_group=os.getpgid(monitored_process.pid)
+            kill_process_group(bad_group)
+        except:
+            print "Unable to kill process group %r" % pgrp
         log_error_line(''.join(lines))
         troublesome_ids=[x.split('|', 1)[0] for x in lines]
         return '\n'.join("%s|*** error ***" % x for x in troublesome_ids)
-    return monitored_process.returnvalue
+    results=[]
+    while True:
+        try:
+            x=from_child.get(False)
+        except Empty:
+            break
+        results.append(x)
+    return "\n".join(results)
     
 def process_queue(which_queue, output_queue, number_of_lines_at_once=10):
     this_request=[]
@@ -125,6 +173,11 @@ def process_queue(which_queue, output_queue, number_of_lines_at_once=10):
             get_response=process_several_lines(request_lines)
             if get_response is not None:
                 output_queue.put((block_number, get_response))
+            else:
+                output_queue.put((block_number, ""))
+        except:
+            print "Exception:", traceback.format_exc(), "on block", block_number
+            output_queue.put((block_number, ""))
         finally:
             which_queue.task_done()
     return
@@ -133,6 +186,7 @@ def retrieve_output(output_queue, output_file, number_of_lines_at_once=10):
     start_time=time.time()
     items=0
     next_block=0
+    lines_actually_written=0
     waiting_blocks=[]
     while True:
         incoming_output=output_queue.get()
@@ -150,18 +204,21 @@ def retrieve_output(output_queue, output_file, number_of_lines_at_once=10):
         waiting_blocks.sort()
         # The next line relies on Python's short circuit evaluation 
         while len(waiting_blocks)>0 and waiting_blocks[0][0]==next_block:
-            output_file.write('%s\n' % waiting_blocks.pop(0)[1])
+            line_block=waiting_blocks.pop(0)[1]
+            output_file.write('%s\n' % line_block)
             next_block+=1
-        print "%d items processed and %d output in %1.2f sec (%1.2f items/sec)" % (
-                                                    items, 
-                                                    next_block*number_of_lines_at_once,
-                                                    elapsed, speed)
+            lines_actually_written+=line_block.count('\n')
+        print "%d items processed. %d received. %d lines output in %1.2f s (%1.2f items/s)" % (
+                                        items, 
+                                        next_block*number_of_lines_at_once,
+                                        lines_actually_written,
+                                        elapsed, speed)
 
     # This will only happen if waiting_blocks is not empty
     for b in waiting_blocks:
         output_file.write("%s\n" % b[1])
     return
-    
+
 def main():
     workers=cpu_count()
     line_queue=JoinableQueue(workers*2) # Keep at most 2*workers lines in flight
