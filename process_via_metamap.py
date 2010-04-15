@@ -42,14 +42,14 @@ import mmap
 METAMAP_BINARY="/opt/public_mm/bin/metamap09 -Z 08 -iDN --no_header_info"
 
 # The number of lines to process in each instance of MetaMap
-LINES_AT_ONCE=25
+LINES_AT_ONCE=1
 
 # The maximum number of words per line MetaMap will process without crashing
 # Arbitrarily chose 125. Who writes 100+ word sentences anyway?
 MAX_WORDS_PER_LINE=200
 
 # The maximum number of seconds to spend per line
-MAX_SECONDS_PER_LINE=15
+MAX_SECONDS_PER_LINE=10
 
 # These are the lines that interest us in MetaMap's output
 metamap_output_filter=re.compile(r'^\d+\|.*', re.MULTILINE)
